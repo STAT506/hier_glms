@@ -1,0 +1,139 @@
+---
+title: "Hierarchical GLMs"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+library(tidyverse) 
+library(arm)
+library(knitr)
+library(lme4)
+library(rstanarm)
+options(mc.cores = parallel::detectCores())
+```
+
+
+```{r, message = F}
+seattle <- read_csv("http://math.montana.edu/ahoegh/teaching/stat408/datasets/SeattleHousing.csv")
+
+seattle <- seattle %>% mutate(zipcode = factor(zipcode),
+                              sqft_living_sq = sqft_living ^2,
+                              sqft1000 = sqft_living / 1000,
+                              price100000 = price / 100000,
+                              scale_sqft = scale(sqft_living),
+                              more2 = bathrooms > 2,
+                              lessequal2 = bathrooms <= 2,
+                              beds = ifelse(more2, 'more2', 'less=2'))
+```
+
+```{r, echo = F}
+seattle %>% 
+  ggplot(aes(x = zipcode, fill = beds)) +
+  geom_bar() + theme_bw() + ylab("number of homes") + 
+  ggtitle('Bedroom Composition for Zipcode in King County, WA') +
+  scale_fill_manual(values=c("#E69F00", "#56B4E9"))
+```
+
+```{r, echo = F}
+  seattle %>% 
+  ggplot(aes(x = zipcode, fill = beds)) +
+  geom_bar(position = 'fill') + theme_bw() + ylab('proportion') +
+  ggtitle('Bedroom Composition for Zipcode in King County, WA') +
+    scale_fill_manual(values=c("#E69F00", "#56B4E9"))
+  
+```
+
+
+### Hierarchical GLMs
+
+Multilevel principles (different effects across different groups) can also be applied to GLMs.
+\vfill
+
+Consider a multilevel - logistic regression model:
+
+\begin{eqnarray*}
+y_i &\sim& Bernoulli(p_i)\\
+logit(p_i) &=& \alpha_{j[i]} + \beta_{j[i]}\\
+\alpha_j &\sim& N(\mu_\alpha, \sigma_{\alpha}^2)\\
+\beta_j &\sim& N(\mu_\beta, \sigma_{\beta}^2)\\
+\end{eqnarray*}
+
+\vfill
+
+\newpage
+
+```{r, echo = T}
+glm1 <- glm(cbind(more2,lessequal2) ~ 1, data = seattle, family = binomial)
+display(glm1)
+invlogit(coef(glm1))
+stan1 <- stan_glm(cbind(more2,lessequal2) ~ 1, data = seattle, family = binomial, refresh = 0)
+print(stan1)
+invlogit(coef(stan1))
+seattle %>% summarise(freq = mean(more2))
+```
+
+\newpage
+
+```{r, echo = T}
+glmer1 <- stan_glmer(cbind(more2,lessequal2) ~ 1 + (1 | zipcode), 
+                     data = seattle, family = binomial, refresh = 0)
+print(glmer1)
+fixef(glmer1)
+ranef(glmer1)
+coef(glmer1)
+seattle %>% group_by(zipcode) %>% summarise(freq = mean(more2), n = n()) %>%
+  ungroup() %>% 
+  bind_cols(tibble(glmer_est = invlogit(coef(glmer1)$zipcode[[1]]))
+)
+```
+
+\newpage
+
+Covariates can also be added that vary across the groups
+
+```{r}
+glmer_warn <- glmer(cbind(more2,lessequal2) ~  scale_sqft + (1 + scale_sqft | zipcode), 
+                data = seattle, family = binomial)
+```
+
+
+```{r, echo = T}
+glmer2 <- stan_glmer(cbind(more2,lessequal2) ~  scale_sqft + (1 + scale_sqft | zipcode), 
+                data = seattle, family = binomial, refresh = 0)
+print(glmer2)
+fixef(glmer2)
+ranef(glmer2)
+coef(glmer2)
+```
+
+### Stan
+
+Stan is a more general approach for fitting hierarchical models. Both have additional flexibility for specifying sampling models directly.
+
+Below is the syntax for a Stan model for hierarchical logistic regression.
+```{r, eval = F, echo = T}
+data {
+  int<lower=1> D;
+  int<lower=0> N;
+  int<lower=1> L;
+  int<lower=0,upper=1> y[N];
+  int<lower=1,upper=L> ll[N];
+  row_vector[D] x[N];
+}
+parameters {
+  real mu[D];
+  real<lower=0> sigma[D];
+  vector[D] beta[L];
+}
+model {
+  for (d in 1:D) {
+    mu[d] ~ normal(0, 100);
+    for (l in 1:L)
+      beta[l,d] ~ normal(mu[d], sigma[d]);
+  }
+  for (n in 1:N)
+    y[n] ~ bernoulli(inv_logit(x[n] * beta[ll[n]]));
+}
+```
+
